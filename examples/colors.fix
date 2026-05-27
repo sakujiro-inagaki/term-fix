@@ -1,0 +1,73 @@
+// Manual smoke test for Yaynu.Term.Ansi colour helpers.
+//
+// Prints (a) the full 16-colour palette as foreground swatches,
+// (b) a 16x16 grid of the 256-colour palette, and (c) a sweep across
+// the red→blue dimensions of the 24-bit RGB space.
+//
+// Run with `fix run -f examples/colors.fix` after the project
+// otherwise builds.
+module Main;
+
+import Yaynu.Term.Ansi;
+import Yaynu.Term.Output;
+
+_all_16 : Array Color16;
+_all_16 = [
+    Color16::black(), Color16::red(), Color16::green(), Color16::yellow(),
+    Color16::blue(), Color16::magenta(), Color16::cyan(), Color16::white(),
+    Color16::bright_black(), Color16::bright_red(), Color16::bright_green(),
+    Color16::bright_yellow(), Color16::bright_blue(), Color16::bright_magenta(),
+    Color16::bright_cyan(), Color16::bright_white()
+];
+
+_show_16 : IOFail ();
+_show_16 = (
+    Output::write("== 16-colour foregrounds ==\n");;
+    _all_16.to_iter.fold_m((), |c, _|
+        Output::write(Ansi::paint(Ansi::fg_color_16(c), "  ##  "))
+    );;
+    Output::write("\n");;
+    Output::write("== 16-colour backgrounds ==\n");;
+    _all_16.to_iter.fold_m((), |c, _|
+        Output::write(Ansi::paint(Ansi::bg_color_16(c), "      "))
+    );;
+    Output::write("\n")
+);
+
+_show_256 : IOFail ();
+_show_256 = (
+    Output::write("== 256-colour grid (16x16) ==\n");;
+    Iterator::range(0, 16).fold_m((), |row, _|
+        Iterator::range(0, 16).fold_m((), |col, _|
+            let idx = (row * 16 + col).to_U8;
+            Output::write(Ansi::paint(Ansi::bg_color_256(idx), "  "))
+        );;
+        Output::write("\n")
+    )
+);
+
+_show_rgb : IOFail ();
+_show_rgb = (
+    Output::write("== 24-bit RGB sweep (red -> blue) ==\n");;
+    Iterator::range(0, 64).fold_m((), |i, _|
+        // 64 steps across red and blue, fixed green = 0.
+        let t = (i * 4).to_I64;
+        let r = (255 - t).to_U8;
+        let b = t.to_U8;
+        Output::write(Ansi::paint(Ansi::bg_color_rgb(r, 0_U8, b), " "))
+    );;
+    Output::write("\n")
+);
+
+main : IO ();
+main = (
+    let result = *(
+        _show_16;;
+        _show_256;;
+        _show_rgb
+    ).to_result;
+    match result {
+        ok(_)  => pure(),
+        err(e) => eprintln("colors example failed: " + e)
+    }
+);

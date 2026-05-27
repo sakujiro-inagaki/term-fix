@@ -1,0 +1,47 @@
+// Manual smoke test for terminal-size + SIGWINCH detection.
+//
+// Prints the current `TermSize`, installs the SIGWINCH handler, and
+// then polls `check_resized` every 200 ms. Each detected resize
+// causes a re-read and re-print. Exit with Ctrl+C.
+module Main;
+
+import Yaynu.Term.Output;
+import Yaynu.Term.Size;
+
+// Sleep for `ms` milliseconds via the FFI `usleep` (POSIX).
+_sleep_ms : I64 -> IO ();
+_sleep_ms = |ms|
+    FFI_CALL_IO[CInt usleep(CUnsignedInt),
+                (ms * 1000).to_CInt.to_CUnsignedInt]
+        .bind(|_| pure());
+
+_print_size : TermSize -> IOFail ();
+_print_size = |sz|
+    Output::write("size: rows=" + sz.@rows.to_string
+                  + " cols=" + sz.@cols.to_string + "\n");
+
+_run : IOFail ();
+_run = (
+    let initial = *TermSize::get;
+    _print_size(initial);;
+    loop_m((), |_|
+        let resized = *check_resized.lift;
+        if resized {
+            let sz = *TermSize::get;
+            _print_size(sz);;
+            continue_m $ ()
+        };
+        _sleep_ms(200).lift;;
+        continue_m $ ()
+    )
+);
+
+main : IO ();
+main = (
+    install_resize_handler;;
+    let result = *_run.to_result;
+    match result {
+        ok(_)  => pure(),
+        err(e) => eprintln("show_size failed: " + e)
+    }
+);

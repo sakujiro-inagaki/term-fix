@@ -1,0 +1,11 @@
+.claude
+.fixlang
+
+# Fix build artifacts
+a.out
+*.out
+
+# C shim build artifacts
+c_src/*.o
+c_src/*.a
+c_src/build/

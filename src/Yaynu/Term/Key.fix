@@ -1,0 +1,314 @@
+// Logical key abstraction and byte-stream parser.
+//
+// `parse : Array U8 -> KeyParseResult` is a pure state-machine over an
+// input buffer. It recognises printable ASCII, special control bytes,
+// ESC-prefixed sequences (CSI, SS3, Alt), and UTF-8 1..4-byte
+// characters. The caller is responsible for time-based disambiguation
+// of a bare ESC; see `escape_from_timeout`.
+//
+// Reference for ESC sequences: xterm / Alacritty / iTerm2 default
+// keymaps. Modified-arrow forms (`ESC [ 1 ; <mod> A`) are NOT
+// recognised in v0.1 and surface as `invalid`.
+module Yaynu.Term.Key;
+
+// ---- types ----
+
+type Key = box union {
+    char        : String,
+    enter       : (),
+    tab         : (),
+    backspace   : (),
+    escape      : (),
+    arrow_up    : (),
+    arrow_down  : (),
+    arrow_left  : (),
+    arrow_right : (),
+    home        : (),
+    end_key     : (),
+    page_up     : (),
+    page_down   : (),
+    insert      : (),
+    delete_key  : (),
+    f           : I64,
+    ctrl        : String,
+    alt         : String,
+    unknown     : Array U8
+};
+
+type KeyParseResult = box union {
+    complete   : (Key, I64),
+    incomplete : (),
+    invalid    : I64
+};
+
+// Returned by callers that decided a bare ESC press is final (after a
+// timeout). The library does not measure time itself; this helper just
+// names the canonical `Key::escape` value to keep callers' code clear.
+escape_from_timeout : Key;
+escape_from_timeout = Key::escape();
+
+// ---- internal helpers ----
+
+// Build a single-character String from one ASCII byte. Used for the
+// printable / alt / ctrl variants.
+_byte_to_string : U8 -> String;
+_byte_to_string = |b| String::_unsafe_from_c_str([b, 0_U8]);
+
+// Slice the first `n` bytes of `bytes` and turn them into a String.
+// Used for UTF-8 multi-byte char.
+_slice_to_string : Array U8 -> I64 -> String;
+_slice_to_string = |bytes, n| (
+    let slice = Array::from_map(n, |i| bytes.@(i));
+    String::_unsafe_from_c_str(slice.push_back(0_U8))
+);
+
+// ASCII digit check.
+_is_digit : U8 -> Bool;
+_is_digit = |b| b >= 48_U8 && b <= 57_U8;
+
+// CSI / SS3 terminator class: a final byte ending a CSI sequence.
+_is_csi_terminator : U8 -> Bool;
+_is_csi_terminator = |b|
+    (b >= 65_U8 && b <= 90_U8)   // A..Z
+    || (b >= 97_U8 && b <= 122_U8) // a..z
+    || b == 126_U8;                // ~
+
+// UTF-8 continuation byte check (0b10xxxxxx).
+_is_utf8_cont : U8 -> Bool;
+_is_utf8_cont = |b| b >= 128_U8 && b <= 191_U8;
+
+// Map a control byte 0x01..0x1A to its lowercase letter (a..z) as a
+// one-character String.
+_ctrl_letter : U8 -> String;
+_ctrl_letter = |b| _byte_to_string(b - 1_U8 + 97_U8);
+
+// Lowercase hex for `to_string(unknown)`.
+_bytes_to_hex : Array U8 -> String;
+_bytes_to_hex = |bytes| (
+    if bytes.get_size == 0 { "" };
+    let chars = Array::from_map(bytes.get_size * 2, |i| (
+        let b = bytes.@(i / 2);
+        let nib = if i % 2 == 0 {
+            b.shift_right(4_U8).bit_and(15_U8)
+        } else {
+            b.bit_and(15_U8)
+        };
+        if nib < 10_U8 { nib + 48_U8 } else { nib + 87_U8 }
+    ));
+    String::_unsafe_from_c_str(chars.push_back(0_U8))
+);
+
+// ---- UTF-8 sub-parser ----
+
+// `expected_len` is 2, 3, or 4. The leader byte has already been
+// validated by the caller. Returns:
+//   - incomplete if the buffer is shorter than expected
+//   - invalid(k) if a continuation byte (at index 1..expected_len-1)
+//     does not start with `10`; k is leader + valid continuations
+//     before the bad one (minimum 1)
+//   - complete(char(slice), expected_len) when all continuations are
+//     valid
+_parse_utf8 : Array U8 -> I64 -> KeyParseResult;
+_parse_utf8 = |bytes, expected_len| (
+    let n = bytes.get_size;
+    if n < expected_len { KeyParseResult::incomplete() };
+
+    // Count how many of the 1..expected_len-1 continuation slots are
+    // valid (start with `10`). Starts at 1 (leader counted).
+    let valid_count = loop(1, |i|
+        if i >= expected_len { break $ i };
+        if _is_utf8_cont(bytes.@(i)) { continue $ i + 1 };
+        break $ i
+    );
+
+    if valid_count < expected_len {
+        // Bad continuation at index `valid_count`. Minimum is 1 (the
+        // leader). The leader-only case happens when the first
+        // continuation byte is malformed.
+        KeyParseResult::invalid(valid_count)
+    };
+
+    KeyParseResult::complete((Key::char(_slice_to_string(bytes, expected_len)),
+                              expected_len))
+);
+
+// ---- CSI sub-parser ----
+
+// Caller guarantees bytes[0]=0x1B and bytes[1]='['.
+//
+// Returns invalid(n) where n is the total bytes consumed including
+// terminator, incomplete if no terminator within the buffer.
+_parse_csi : Array U8 -> KeyParseResult;
+_parse_csi = |bytes| (
+    let n = bytes.get_size;
+    if n == 2 { KeyParseResult::incomplete() };
+
+    // Find first terminator at or after index 2.
+    let term_idx = loop(2, |i|
+        if i >= n { break $ -1 };
+        if _is_csi_terminator(bytes.@(i)) { break $ i };
+        continue $ i + 1
+    );
+
+    if term_idx == -1 { KeyParseResult::incomplete() };
+
+    let total = term_idx + 1;
+    let term = bytes.@(term_idx);
+
+    // 3-byte forms: ESC [ X where X is a letter
+    if total == 3 {
+        if term == 65_U8 { KeyParseResult::complete((Key::arrow_up(), 3)) };    // A
+        if term == 66_U8 { KeyParseResult::complete((Key::arrow_down(), 3)) };  // B
+        if term == 67_U8 { KeyParseResult::complete((Key::arrow_right(), 3)) }; // C
+        if term == 68_U8 { KeyParseResult::complete((Key::arrow_left(), 3)) };  // D
+        if term == 72_U8 { KeyParseResult::complete((Key::home(), 3)) };        // H
+        if term == 70_U8 { KeyParseResult::complete((Key::end_key(), 3)) };     // F
+        KeyParseResult::invalid(3)
+    };
+
+    // 4-byte forms: ESC [ N ~  (single digit + ~)
+    if total == 4 && term == 126_U8 && _is_digit(bytes.@(2)) {
+        let d = (bytes.@(2) - 48_U8).to_I64;
+        if d == 1 { KeyParseResult::complete((Key::home(), 4)) };
+        if d == 2 { KeyParseResult::complete((Key::insert(), 4)) };
+        if d == 3 { KeyParseResult::complete((Key::delete_key(), 4)) };
+        if d == 4 { KeyParseResult::complete((Key::end_key(), 4)) };
+        if d == 5 { KeyParseResult::complete((Key::page_up(), 4)) };
+        if d == 6 { KeyParseResult::complete((Key::page_down(), 4)) };
+        KeyParseResult::invalid(4)
+    };
+
+    // 5-byte forms: ESC [ N M ~  (two digits + ~)
+    if total == 5 && term == 126_U8
+        && _is_digit(bytes.@(2)) && _is_digit(bytes.@(3)) {
+        let d1 = (bytes.@(2) - 48_U8).to_I64;
+        let d2 = (bytes.@(3) - 48_U8).to_I64;
+        let p = d1 * 10 + d2;
+        if p == 15 { KeyParseResult::complete((Key::f(5), 5)) };
+        if p == 17 { KeyParseResult::complete((Key::f(6), 5)) };
+        if p == 18 { KeyParseResult::complete((Key::f(7), 5)) };
+        if p == 19 { KeyParseResult::complete((Key::f(8), 5)) };
+        if p == 20 { KeyParseResult::complete((Key::f(9), 5)) };
+        if p == 21 { KeyParseResult::complete((Key::f(10), 5)) };
+        if p == 23 { KeyParseResult::complete((Key::f(11), 5)) };
+        if p == 24 { KeyParseResult::complete((Key::f(12), 5)) };
+        KeyParseResult::invalid(5)
+    };
+
+    // Anything else: a recognised CSI shape we do not know — discard
+    // the whole sequence so the caller can resync.
+    KeyParseResult::invalid(total)
+);
+
+// ---- SS3 sub-parser ----
+
+// Caller guarantees bytes[0]=0x1B and bytes[1]='O'.
+_parse_ss3 : Array U8 -> KeyParseResult;
+_parse_ss3 = |bytes| (
+    let n = bytes.get_size;
+    if n == 2 { KeyParseResult::incomplete() };
+
+    let b2 = bytes.@(2);
+    if b2 == 80_U8 { KeyParseResult::complete((Key::f(1), 3)) };  // P
+    if b2 == 81_U8 { KeyParseResult::complete((Key::f(2), 3)) };  // Q
+    if b2 == 82_U8 { KeyParseResult::complete((Key::f(3), 3)) };  // R
+    if b2 == 83_U8 { KeyParseResult::complete((Key::f(4), 3)) };  // S
+
+    KeyParseResult::invalid(3)
+);
+
+// ---- ESC sub-parser ----
+
+// Caller guarantees bytes[0]=0x1B.
+_parse_esc : Array U8 -> KeyParseResult;
+_parse_esc = |bytes| (
+    let n = bytes.get_size;
+    if n == 1 { KeyParseResult::incomplete() };
+
+    let b1 = bytes.@(1);
+
+    if b1 == 91_U8 { _parse_csi(bytes) };  // [
+    if b1 == 79_U8 { _parse_ss3(bytes) };  // O
+
+    // Alt-printable: ESC + printable ASCII
+    if b1 >= 32_U8 && b1 <= 126_U8 {
+        KeyParseResult::complete((Key::alt(_byte_to_string(b1)), 2))
+    };
+
+    // ESC + non-printable, non-[/O: unknown ESC sequence
+    KeyParseResult::invalid(2)
+);
+
+// ---- top-level parser ----
+
+// Parse a key from the buffer's leading bytes.
+//
+// See module docstring and the term-key capability spec for full
+// semantics.
+parse : Array U8 -> KeyParseResult;
+parse = |bytes| (
+    let n = bytes.get_size;
+    if n == 0 { KeyParseResult::incomplete() };
+
+    let b0 = bytes.@(0);
+
+    // Special single-byte control characters.
+    if b0 == 9_U8 { KeyParseResult::complete((Key::tab(), 1)) };
+    if b0 == 10_U8 || b0 == 13_U8 {
+        KeyParseResult::complete((Key::enter(), 1))
+    };
+    if b0 == 8_U8 || b0 == 127_U8 {
+        KeyParseResult::complete((Key::backspace(), 1))
+    };
+
+    // ESC (0x1B): defer to ESC sub-parser.
+    if b0 == 27_U8 { _parse_esc(bytes) };
+
+    // Other control bytes 0x01..0x1A (excluding the specials above and
+    // ESC, which were already handled) → Ctrl+<letter>.
+    if b0 >= 1_U8 && b0 <= 26_U8 {
+        KeyParseResult::complete((Key::ctrl(_ctrl_letter(b0)), 1))
+    };
+
+    // Printable ASCII.
+    if b0 >= 32_U8 && b0 <= 126_U8 {
+        KeyParseResult::complete((Key::char(_byte_to_string(b0)), 1))
+    };
+
+    // UTF-8 leading bytes.
+    if b0 >= 192_U8 && b0 <= 223_U8 { _parse_utf8(bytes, 2) };  // 110xxxxx
+    if b0 >= 224_U8 && b0 <= 239_U8 { _parse_utf8(bytes, 3) };  // 1110xxxx
+    if b0 >= 240_U8 && b0 <= 247_U8 { _parse_utf8(bytes, 4) };  // 11110xxx
+
+    // Stray continuation (0x80..0xBF) or bad leader (0xF8..0xFF).
+    KeyParseResult::invalid(1)
+);
+
+// ---- human-readable rendering ----
+
+// Diagnostic string suitable for echoing in `examples/echo_keys.fix`
+// or logging. Distinct variants produce distinguishable strings.
+to_string : Key -> String;
+to_string = |k| (
+    match k {
+        char(s)      => "char:" + s,
+        enter()      => "enter",
+        tab()        => "tab",
+        backspace()  => "backspace",
+        escape()     => "escape",
+        arrow_up()   => "arrow_up",
+        arrow_down() => "arrow_down",
+        arrow_left() => "arrow_left",
+        arrow_right() => "arrow_right",
+        home()       => "home",
+        end_key()    => "end",
+        page_up()    => "page_up",
+        page_down()  => "page_down",
+        insert()     => "insert",
+        delete_key() => "delete",
+        f(n)         => "f:" + n.to_string,
+        ctrl(s)      => "ctrl:" + s,
+        alt(s)       => "alt:" + s,
+        unknown(b)   => "unknown:" + _bytes_to_hex(b)
+    }
+);

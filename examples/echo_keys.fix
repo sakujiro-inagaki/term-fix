@@ -1,0 +1,104 @@
+// Manual smoke test for raw-mode input + Key parsing.
+//
+// Enters `enter_raw_no_sig` so Ctrl+C is delivered as the byte 0x03
+// (parsed as `ctrl("c")`) and exits the loop cleanly. Reads bytes
+// with `read_byte_timeout`, accumulates them in a buffer, and feeds
+// the buffer to `Key::parse`. ESC alone is finalised after an 80 ms
+// idle window.
+//
+// Press Ctrl+C to quit; the terminal will be restored to canonical
+// mode automatically via `with_raw`'s restore.
+module Main;
+
+import Yaynu.Term.Ansi;
+import Yaynu.Term.Input;
+import Yaynu.Term.Key;
+import Yaynu.Term.Mode;
+import Yaynu.Term.Output;
+
+// Drop the first `n` bytes from `bs`.
+_drop : I64 -> Array U8 -> Array U8;
+_drop = |n, bs| (
+    let sz = bs.get_size;
+    if n >= sz { [] };
+    Array::from_map(sz - n, |i| bs.@(i + n))
+);
+
+// True iff the buffer is exactly the single byte ESC (`0x1B`).
+_is_bare_esc : Array U8 -> Bool;
+_is_bare_esc = |bs| bs.get_size == 1 && bs.@(0) == 27_U8;
+
+_render : Key -> String;
+_render = |k| Key::to_string(k) + "\r\n";
+
+// Returns Ok true to continue the loop, Ok false to exit (Ctrl+C),
+// Err to propagate an error.
+_handle : Key -> IOFail Bool;
+_handle = |k| (
+    match k {
+        ctrl(s) => (
+            if s == "c" {
+                Output::write("Exiting (Ctrl+C).\r\n");;
+                pure $ false
+            };
+            Output::write(_render(k));;
+            pure $ true
+        ),
+        _ => (
+            Output::write(_render(k));;
+            pure $ true
+        )
+    }
+);
+
+// Main loop: keep reading until Ctrl+C produces ctrl("c").
+_loop : IOFail ();
+_loop = (
+    loop_m([] : Array U8, |buf|
+        match Key::parse(buf) {
+            complete((k, n)) => (
+                let keep_going = *_handle(k);
+                if !keep_going { break_m $ () };
+                continue_m $ _drop(n, buf)
+            ),
+            invalid(n) => (
+                Output::write("invalid(" + n.to_string + ")\r\n");;
+                continue_m $ _drop(n, buf)
+            ),
+            incomplete() => (
+                // Bare ESC gets an 80ms timeout; everything else gets
+                // a long timeout because no other event source is
+                // pending in this example.
+                let timeout_ms = if _is_bare_esc(buf) { 80 } else { 5000 };
+                let next = *Input::read_byte_timeout(timeout_ms);
+                match next {
+                    some(b) => continue_m $ buf.push_back(b),
+                    none() => (
+                        if _is_bare_esc(buf) {
+                            // ESC alone after the idle window — emit
+                            // Key::escape and clear the buffer.
+                            let _ = *_handle(Key::escape_from_timeout);
+                            continue_m $ []
+                        };
+                        // Other timeouts: just keep waiting.
+                        continue_m $ buf
+                    )
+                }
+            )
+        }
+    )
+);
+
+main : IO ();
+main = (
+    let result = *(
+        Output::write(
+            "Press keys. Ctrl+C to exit.\r\n"
+        );;
+        Mode::with_raw(|_| _loop)
+    ).to_result;
+    match result {
+        ok(_)  => pure(),
+        err(e) => eprintln("echo_keys failed: " + e)
+    }
+);

@@ -1,0 +1,45 @@
+// Manual smoke test for the cursor / screen-clearing helpers.
+//
+// Clears the screen, hides the cursor, draws a 5x5 grid of dots
+// positioned via `move_to`, waits ~3 seconds, then re-shows the
+// cursor and restores the screen.
+module Main;
+
+import Yaynu.Term.Ansi;
+import Yaynu.Term.Output;
+
+_sleep_seconds : I64 -> IO ();
+_sleep_seconds = |secs|
+    FFI_CALL_IO[CUnsignedInt sleep(CUnsignedInt), secs.to_CInt.to_CUnsignedInt]
+        .bind(|_| pure());
+
+_draw : IOFail ();
+_draw = (
+    Output::write_batch([Ansi::clear_screen, Ansi::hide_cursor]);;
+    Iterator::range(0, 5).fold_m((), |row, _|
+        Iterator::range(0, 5).fold_m((), |col, _|
+            // 1-origin coordinates; shift the grid to (2..6, 4..14 step 2)
+            let r = row + 2;
+            let c = col * 2 + 4;
+            Output::write_batch([Ansi::move_to(r, c), "*"])
+        )
+    );;
+    Output::write_batch([Ansi::move_to(8, 1), "Drawn a 5x5 grid (cursor hidden)\n"])
+);
+
+main : IO ();
+main = (
+    let result = *(_draw).to_result;
+    match result {
+        ok(_)  => pure(),
+        err(e) => eprintln("cursor draw failed: " + e)
+    };;
+    _sleep_seconds(3);;
+    let result2 = *(
+        Output::write_batch([Ansi::show_cursor, Ansi::move_to(10, 1)])
+    ).to_result;
+    match result2 {
+        ok(_)  => pure(),
+        err(e) => eprintln("cursor cleanup failed: " + e)
+    }
+);

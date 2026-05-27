@@ -1,0 +1,104 @@
+// Internal FFI surface for the term-fix C shim.
+//
+// Every `FFI_CALL_IO[...]` that talks to the POSIX terminal subsystem
+// (termios / ioctl / sigaction / select / read) lives in this module.
+// Public modules (`Yaynu.Term.Mode`, `Yaynu.Term.Size`, `Yaynu.Term.Input`)
+// call the thin wrappers declared here rather than calling the shim
+// directly. That keeps the unsafe boundary narrow and the
+// "no FFI outside Ffi" rule a one-line grep.
+//
+// This module is intentionally NOT re-exported by `Yaynu.Term` — callers
+// must `import Yaynu.Term.Ffi;` explicitly if they need to bypass the
+// higher-level wrappers.
+module Yaynu.Term.Ffi;
+
+// ---- termios snapshot / restore ----
+
+// `sizeof(struct termios)` on the running platform. Used by `Mode`
+// to allocate the opaque byte buffer that backs `TermMode::saved`.
+termios_size : IO CInt;
+termios_size = FFI_CALL_IO[CInt fix_term_termios_size()];
+
+// `tcgetattr(fd, termios_buf)`. Returns 0 on success, -1 on failure
+// (with errno set by libc).
+get_attr : CInt -> Ptr -> IO CInt;
+get_attr = |fd, buf|
+    FFI_CALL_IO[CInt fix_term_get_attr(CInt, Ptr), fd, buf];
+
+// `tcsetattr(fd, when, termios_buf)`. `when` is one of TCSANOW (=0 on
+// Linux/macOS), TCSADRAIN, TCSAFLUSH. We pass TCSANOW from the Fix
+// wrapper because raw-mode toggles want immediate effect.
+set_attr : CInt -> CInt -> Ptr -> IO CInt;
+set_attr = |fd, when, buf|
+    FFI_CALL_IO[CInt fix_term_set_attr(CInt, CInt, Ptr), fd, when, buf];
+
+// In-place clear of `ICANON | ECHO` on the buffer's `c_lflag`. The
+// caller passes a buffer obtained from `get_attr`. Returns 0.
+make_raw : Ptr -> IO CInt;
+make_raw = |buf| FFI_CALL_IO[CInt fix_term_make_raw(Ptr), buf];
+
+// In-place clear of `ECHO` only. Returns 0.
+make_no_echo : Ptr -> IO CInt;
+make_no_echo = |buf| FFI_CALL_IO[CInt fix_term_make_no_echo(Ptr), buf];
+
+// In-place clear of `ICANON | ECHO | ISIG`. Returns 0.
+make_raw_no_sig : Ptr -> IO CInt;
+make_raw_no_sig = |buf| FFI_CALL_IO[CInt fix_term_make_raw_no_sig(Ptr), buf];
+
+// ---- terminal size ----
+
+// `ioctl(fd, TIOCGWINSZ, ...)`. Out-pointer arguments receive the row
+// and column counts. The Fix wrapper passes Array I32 of size 1 for
+// each. Returns 0 on success, -1 on failure.
+get_size : CInt -> Ptr -> Ptr -> IO CInt;
+get_size = |fd, rows_ptr, cols_ptr|
+    FFI_CALL_IO[CInt fix_term_get_size(CInt, Ptr, Ptr), fd, rows_ptr, cols_ptr];
+
+// ---- SIGWINCH handler ----
+
+// Install the SIGWINCH handler that sets the internal flag. Idempotent.
+// Returns 0 on success, -1 on sigaction failure.
+install_winch_handler : IO CInt;
+install_winch_handler = FFI_CALL_IO[CInt fix_term_install_winch_handler()];
+
+// Test-and-clear the internal flag. Returns 1 if a SIGWINCH was
+// delivered since the previous call, 0 otherwise.
+check_winch_flag : IO CInt;
+check_winch_flag = FFI_CALL_IO[CInt fix_term_check_winch_flag()];
+
+// ---- single-byte read with timeout ----
+
+// `select(2)` + `read(2)` on the supplied fd. `out` is a single-byte
+// buffer (Array U8 of size 1) that receives the byte on success.
+// Returns:
+//   1 — a byte was read; `out` is updated
+//   0 — `timeout_ms` elapsed with no byte available
+//  -1 — syscall error or EOF on a non-TTY fd
+read_byte_timeout : CInt -> CInt -> Ptr -> IO CInt;
+read_byte_timeout = |fd, timeout_ms, out_ptr|
+    FFI_CALL_IO[CInt fix_term_read_byte_timeout(CInt, CInt, Ptr),
+                fd, timeout_ms, out_ptr];
+
+// `strerror(errno)` snapshot. Fills the caller-provided buffer with a
+// NUL-terminated message (truncated to `cap-1`) and returns the
+// errno value at entry. Call immediately after a failing shim
+// function so the underlying errno is still valid.
+strerror : Ptr -> CInt -> IO CInt;
+strerror = |buf_ptr, cap|
+    FFI_CALL_IO[CInt fix_term_strerror(Ptr, CInt), buf_ptr, cap];
+
+// ---- POSIX constants exposed for the public modules ----
+
+// `STDIN_FILENO`, `STDOUT_FILENO`. Hard-coded per POSIX so we do not
+// need a shim entrypoint.
+stdin_fd : CInt;
+stdin_fd = 0.to_CInt;
+
+stdout_fd : CInt;
+stdout_fd = 1.to_CInt;
+
+// `TCSANOW` value. POSIX guarantees this is 0 on Linux/macOS; we
+// hard-code it rather than route through the shim because mismatches
+// would already break `make_raw` etc.
+tcsa_now : CInt;
+tcsa_now = 0.to_CInt;

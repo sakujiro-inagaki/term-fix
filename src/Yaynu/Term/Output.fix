@@ -1,0 +1,29 @@
+// Stdout writers with explicit flush.
+//
+// `write` and `write_batch` both flush before returning so the caller
+// can rely on the bytes being visible by the time the IOFail action
+// completes. `write_batch` first concatenates the strings into a
+// single buffer and then issues exactly one underlying write, which
+// avoids visible tearing between escape sequences and content.
+module Yaynu.Term.Output;
+
+// Write `s` to stdout and flush. Empty strings still trigger a flush
+// and succeed with `Ok ()`. Write or flush errors surface as IOFail
+// with an error string mentioning the failing operation.
+write : String -> IOFail ();
+write = |s| (
+    write_string(IO::stdout, s);;
+    let rc = *flush(IO::stdout).lift;
+    if rc.to_I64 != 0 {
+        throw $ "flush: stdout flush returned " + rc.to_string
+    };
+    pure()
+);
+
+// Concatenate `parts` in order and issue a single `write` (then a
+// flush). Empty input array is treated as writing the empty string.
+write_batch : Array String -> IOFail ();
+write_batch = |parts| (
+    let combined = parts.to_iter.concat_iter;
+    write(combined)
+);

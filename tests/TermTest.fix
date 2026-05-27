@@ -1,0 +1,347 @@
+// Unit tests for term-fix.
+//
+// Covered:
+//   - Yaynu.Term.Ansi: all escape-sequence builders (sections 4.x)
+//   - Yaynu.Term.Key: parse + to_string (sections 5.x)
+//
+// Each test uses `assert_eq` with a thunk that names the case. `fix
+// test` panics on mismatch with the thunk's message.
+module Test;
+
+import Yaynu.Term.Ansi;
+import Yaynu.Term.Ffi;
+import Yaynu.Term.Key;
+
+// Build the literal ESC-prefixed byte sequence as a String so test
+// expectations can be written as ordinary string concatenation.
+_esc : String;
+_esc = Ansi::esc;
+
+_csi : String;
+_csi = Ansi::csi;
+
+test_ansi_constants : IO ();
+test_ansi_constants = (
+    assert_eq(|_|"esc is single 0x1B byte",
+        Ansi::esc.get_bytes.get_size, 2);;  // 1 byte + NUL
+    assert_eq(|_|"esc first byte == 27",
+        Ansi::esc.get_bytes.@(0), 27_U8);;
+    assert_eq(|_|"csi == esc + '['",
+        Ansi::csi, _esc + "[");;
+    pure()
+);
+
+test_ansi_clear : IO ();
+test_ansi_clear = (
+    assert_eq(|_|"clear_screen", Ansi::clear_screen, _csi + "2J");;
+    assert_eq(|_|"clear_line", Ansi::clear_line, _csi + "2K");;
+    assert_eq(|_|"clear_to_end_of_line",
+        Ansi::clear_to_end_of_line, _csi + "0K");;
+    assert_eq(|_|"clear_to_start_of_line",
+        Ansi::clear_to_start_of_line, _csi + "1K");;
+    assert_eq(|_|"enter_alternate_screen",
+        Ansi::enter_alternate_screen, _csi + "?1049h");;
+    assert_eq(|_|"leave_alternate_screen",
+        Ansi::leave_alternate_screen, _csi + "?1049l");;
+    pure()
+);
+
+test_ansi_cursor : IO ();
+test_ansi_cursor = (
+    assert_eq(|_|"move_to(5,10)",
+        Ansi::move_to(5, 10), _csi + "5;10H");;
+    assert_eq(|_|"move_to_col(20)",
+        Ansi::move_to_col(20), _csi + "20G");;
+    assert_eq(|_|"move_up(3)", Ansi::move_up(3), _csi + "3A");;
+    assert_eq(|_|"move_down(2)", Ansi::move_down(2), _csi + "2B");;
+    assert_eq(|_|"move_right(1)", Ansi::move_right(1), _csi + "1C");;
+    assert_eq(|_|"move_left(4)", Ansi::move_left(4), _csi + "4D");;
+    assert_eq(|_|"hide_cursor", Ansi::hide_cursor, _csi + "?25l");;
+    assert_eq(|_|"show_cursor", Ansi::show_cursor, _csi + "?25h");;
+    assert_eq(|_|"save_cursor", Ansi::save_cursor, _csi + "s");;
+    assert_eq(|_|"restore_cursor", Ansi::restore_cursor, _csi + "u");;
+    pure()
+);
+
+test_ansi_styles : IO ();
+test_ansi_styles = (
+    assert_eq(|_|"reset", Ansi::reset, _csi + "0m");;
+    assert_eq(|_|"bold", Ansi::bold, _csi + "1m");;
+    assert_eq(|_|"dim", Ansi::dim, _csi + "2m");;
+    assert_eq(|_|"italic", Ansi::italic, _csi + "3m");;
+    assert_eq(|_|"underline", Ansi::underline, _csi + "4m");;
+    assert_eq(|_|"blink", Ansi::blink, _csi + "5m");;
+    assert_eq(|_|"reverse", Ansi::reverse, _csi + "7m");;
+    pure()
+);
+
+test_ansi_color_16_fg : IO ();
+test_ansi_color_16_fg = (
+    assert_eq(|_|"fg black", Ansi::fg_color_16(Color16::black()), _csi + "30m");;
+    assert_eq(|_|"fg red", Ansi::fg_color_16(Color16::red()), _csi + "31m");;
+    assert_eq(|_|"fg green", Ansi::fg_color_16(Color16::green()), _csi + "32m");;
+    assert_eq(|_|"fg yellow", Ansi::fg_color_16(Color16::yellow()), _csi + "33m");;
+    assert_eq(|_|"fg blue", Ansi::fg_color_16(Color16::blue()), _csi + "34m");;
+    assert_eq(|_|"fg magenta", Ansi::fg_color_16(Color16::magenta()), _csi + "35m");;
+    assert_eq(|_|"fg cyan", Ansi::fg_color_16(Color16::cyan()), _csi + "36m");;
+    assert_eq(|_|"fg white", Ansi::fg_color_16(Color16::white()), _csi + "37m");;
+    assert_eq(|_|"fg bright_black",
+        Ansi::fg_color_16(Color16::bright_black()), _csi + "90m");;
+    assert_eq(|_|"fg bright_red",
+        Ansi::fg_color_16(Color16::bright_red()), _csi + "91m");;
+    assert_eq(|_|"fg bright_green",
+        Ansi::fg_color_16(Color16::bright_green()), _csi + "92m");;
+    assert_eq(|_|"fg bright_yellow",
+        Ansi::fg_color_16(Color16::bright_yellow()), _csi + "93m");;
+    assert_eq(|_|"fg bright_blue",
+        Ansi::fg_color_16(Color16::bright_blue()), _csi + "94m");;
+    assert_eq(|_|"fg bright_magenta",
+        Ansi::fg_color_16(Color16::bright_magenta()), _csi + "95m");;
+    assert_eq(|_|"fg bright_cyan",
+        Ansi::fg_color_16(Color16::bright_cyan()), _csi + "96m");;
+    assert_eq(|_|"fg bright_white",
+        Ansi::fg_color_16(Color16::bright_white()), _csi + "97m");;
+    pure()
+);
+
+test_ansi_color_16_bg : IO ();
+test_ansi_color_16_bg = (
+    assert_eq(|_|"bg black", Ansi::bg_color_16(Color16::black()), _csi + "40m");;
+    assert_eq(|_|"bg red", Ansi::bg_color_16(Color16::red()), _csi + "41m");;
+    assert_eq(|_|"bg blue", Ansi::bg_color_16(Color16::blue()), _csi + "44m");;
+    assert_eq(|_|"bg white", Ansi::bg_color_16(Color16::white()), _csi + "47m");;
+    assert_eq(|_|"bg bright_black",
+        Ansi::bg_color_16(Color16::bright_black()), _csi + "100m");;
+    assert_eq(|_|"bg bright_white",
+        Ansi::bg_color_16(Color16::bright_white()), _csi + "107m");;
+    pure()
+);
+
+test_ansi_color_256 : IO ();
+test_ansi_color_256 = (
+    assert_eq(|_|"fg_256(196)", Ansi::fg_color_256(196_U8), _csi + "38;5;196m");;
+    assert_eq(|_|"fg_256(0)", Ansi::fg_color_256(0_U8), _csi + "38;5;0m");;
+    assert_eq(|_|"bg_256(0)", Ansi::bg_color_256(0_U8), _csi + "48;5;0m");;
+    assert_eq(|_|"bg_256(255)", Ansi::bg_color_256(255_U8), _csi + "48;5;255m");;
+    pure()
+);
+
+test_ansi_color_rgb : IO ();
+test_ansi_color_rgb = (
+    assert_eq(|_|"fg_rgb(255,128,0)",
+        Ansi::fg_color_rgb(255_U8, 128_U8, 0_U8), _csi + "38;2;255;128;0m");;
+    assert_eq(|_|"bg_rgb(0,0,0)",
+        Ansi::bg_color_rgb(0_U8, 0_U8, 0_U8), _csi + "48;2;0;0;0m");;
+    pure()
+);
+
+test_ansi_paint : IO ();
+test_ansi_paint = (
+    assert_eq(|_|"paint red 'hi'",
+        Ansi::paint(Ansi::fg_color_16(Color16::red()), "hi"),
+        _csi + "31m" + "hi" + _csi + "0m");;
+    assert_eq(|_|"paint bold empty",
+        Ansi::paint(Ansi::bold, ""),
+        _csi + "1m" + _csi + "0m");;
+    pure()
+);
+
+// ============================================================
+// Yaynu.Term.Key tests
+// ============================================================
+
+// Helpers for comparing KeyParseResult values. The variants carry
+// distinct shapes so a derived Eq would need careful instance writing;
+// instead we render each result to a canonical String and compare.
+_render_key : Key -> String;
+_render_key = Key::to_string;
+
+_render_result : KeyParseResult -> String;
+_render_result = |r| (
+    match r {
+        complete((k, n)) => "complete(" + _render_key(k) + "," + n.to_string + ")",
+        incomplete()     => "incomplete",
+        invalid(n)       => "invalid(" + n.to_string + ")"
+    }
+);
+
+_expect : String -> Array U8 -> String -> IO ();
+_expect = |name, input, want|
+    assert_eq(|_|name, _render_result(Key::parse(input)), want);
+
+test_key_empty : IO ();
+test_key_empty = (
+    _expect("empty", [], "incomplete")
+);
+
+test_key_printable_ascii : IO ();
+test_key_printable_ascii = (
+    _expect("ascii a", [97_U8], "complete(char:a,1)");;
+    _expect("ascii space", [32_U8], "complete(char: ,1)");;
+    _expect("ascii ~", [126_U8], "complete(char:~,1)");;
+    pure()
+);
+
+test_key_special_control : IO ();
+test_key_special_control = (
+    _expect("CR", [13_U8], "complete(enter,1)");;
+    _expect("LF", [10_U8], "complete(enter,1)");;
+    _expect("Tab", [9_U8], "complete(tab,1)");;
+    _expect("0x7F", [127_U8], "complete(backspace,1)");;
+    _expect("0x08", [8_U8], "complete(backspace,1)");;
+    pure()
+);
+
+test_key_ctrl : IO ();
+test_key_ctrl = (
+    _expect("Ctrl+A", [1_U8], "complete(ctrl:a,1)");;
+    _expect("Ctrl+C", [3_U8], "complete(ctrl:c,1)");;
+    _expect("Ctrl+Z", [26_U8], "complete(ctrl:z,1)");;
+    // 0x0B is vertical-tab in the Ctrl range; not enter/tab/backspace.
+    _expect("Ctrl+K (0x0B)", [11_U8], "complete(ctrl:k,1)");;
+    pure()
+);
+
+test_key_alt : IO ();
+test_key_alt = (
+    _expect("Alt+a", [27_U8, 97_U8], "complete(alt:a,2)");;
+    _expect("Alt+b", [27_U8, 98_U8], "complete(alt:b,2)");;
+    _expect("Alt+space", [27_U8, 32_U8], "complete(alt: ,2)");;
+    pure()
+);
+
+test_key_esc_incomplete : IO ();
+test_key_esc_incomplete = (
+    _expect("bare ESC", [27_U8], "incomplete");;
+    _expect("ESC [", [27_U8, 91_U8], "incomplete");;
+    _expect("ESC O", [27_U8, 79_U8], "incomplete");;
+    _expect("ESC [ 1", [27_U8, 91_U8, 49_U8], "incomplete");;
+    _expect("ESC [ 1 5", [27_U8, 91_U8, 49_U8, 53_U8], "incomplete");;
+    pure()
+);
+
+test_key_arrows : IO ();
+test_key_arrows = (
+    _expect("ArrowUp", [27_U8, 91_U8, 65_U8], "complete(arrow_up,3)");;
+    _expect("ArrowDown", [27_U8, 91_U8, 66_U8], "complete(arrow_down,3)");;
+    _expect("ArrowRight", [27_U8, 91_U8, 67_U8], "complete(arrow_right,3)");;
+    _expect("ArrowLeft", [27_U8, 91_U8, 68_U8], "complete(arrow_left,3)");;
+    _expect("Home (CSI H)", [27_U8, 91_U8, 72_U8], "complete(home,3)");;
+    _expect("End (CSI F)", [27_U8, 91_U8, 70_U8], "complete(end,3)");;
+    pure()
+);
+
+test_key_nav : IO ();
+test_key_nav = (
+    // ESC [ N ~
+    _expect("Home alt", [27_U8, 91_U8, 49_U8, 126_U8], "complete(home,4)");;
+    _expect("Insert", [27_U8, 91_U8, 50_U8, 126_U8], "complete(insert,4)");;
+    _expect("Delete", [27_U8, 91_U8, 51_U8, 126_U8], "complete(delete,4)");;
+    _expect("End alt", [27_U8, 91_U8, 52_U8, 126_U8], "complete(end,4)");;
+    _expect("PageUp", [27_U8, 91_U8, 53_U8, 126_U8], "complete(page_up,4)");;
+    _expect("PageDown", [27_U8, 91_U8, 54_U8, 126_U8], "complete(page_down,4)");;
+    pure()
+);
+
+test_key_function_keys : IO ();
+test_key_function_keys = (
+    // SS3-style F1..F4
+    _expect("F1", [27_U8, 79_U8, 80_U8], "complete(f:1,3)");;
+    _expect("F2", [27_U8, 79_U8, 81_U8], "complete(f:2,3)");;
+    _expect("F3", [27_U8, 79_U8, 82_U8], "complete(f:3,3)");;
+    _expect("F4", [27_U8, 79_U8, 83_U8], "complete(f:4,3)");;
+    // CSI-style F5..F12
+    _expect("F5", [27_U8, 91_U8, 49_U8, 53_U8, 126_U8], "complete(f:5,5)");;
+    _expect("F6", [27_U8, 91_U8, 49_U8, 55_U8, 126_U8], "complete(f:6,5)");;
+    _expect("F7", [27_U8, 91_U8, 49_U8, 56_U8, 126_U8], "complete(f:7,5)");;
+    _expect("F8", [27_U8, 91_U8, 49_U8, 57_U8, 126_U8], "complete(f:8,5)");;
+    _expect("F9", [27_U8, 91_U8, 50_U8, 48_U8, 126_U8], "complete(f:9,5)");;
+    _expect("F10", [27_U8, 91_U8, 50_U8, 49_U8, 126_U8], "complete(f:10,5)");;
+    _expect("F11", [27_U8, 91_U8, 50_U8, 51_U8, 126_U8], "complete(f:11,5)");;
+    _expect("F12", [27_U8, 91_U8, 50_U8, 52_U8, 126_U8], "complete(f:12,5)");;
+    pure()
+);
+
+test_key_utf8 : IO ();
+test_key_utf8 = (
+    // 2-byte: é = 0xC3 0xA9
+    _expect("UTF-8 é", [195_U8, 169_U8], "complete(char:é,2)");;
+    // 3-byte: あ = 0xE3 0x81 0x82
+    _expect("UTF-8 あ", [227_U8, 129_U8, 130_U8], "complete(char:あ,3)");;
+    // 4-byte: 🙂 = 0xF0 0x9F 0x99 0x82
+    _expect("UTF-8 🙂", [240_U8, 159_U8, 153_U8, 130_U8], "complete(char:🙂,4)");;
+    pure()
+);
+
+test_key_utf8_incomplete : IO ();
+test_key_utf8_incomplete = (
+    _expect("incomplete 2-byte", [195_U8], "incomplete");;
+    _expect("incomplete 3-byte (1)", [227_U8], "incomplete");;
+    _expect("incomplete 3-byte (2)", [227_U8, 129_U8], "incomplete");;
+    _expect("incomplete 4-byte (3)",
+        [240_U8, 159_U8, 153_U8], "incomplete");;
+    pure()
+);
+
+test_key_invalid : IO ();
+test_key_invalid = (
+    // Stray continuation byte.
+    _expect("stray 0x80", [128_U8], "invalid(1)");;
+    _expect("stray 0xBF", [191_U8], "invalid(1)");;
+    // Bad leader (>= 0xF8).
+    _expect("bad leader 0xF8", [248_U8], "invalid(1)");;
+    // 3-byte UTF-8 with bad continuation: leader + 2 valid + 1 bad
+    // — actually 3-byte expects 3 bytes; if the 2nd byte is bad
+    // (not 0x80..0xBF), invalid(1).
+    _expect("3-byte bad cont 1", [227_U8, 64_U8, 130_U8], "invalid(1)");;
+    // 3-byte with valid cont 1 then bad cont 2: invalid(2)
+    _expect("3-byte bad cont 2", [227_U8, 129_U8, 64_U8], "invalid(2)");;
+    // CSI with unknown terminator
+    _expect("CSI [ z", [27_U8, 91_U8, 122_U8], "invalid(3)");;
+    pure()
+);
+
+test_key_to_string : IO ();
+test_key_to_string = (
+    assert(|_|"to_string arrow_up nonempty",
+        Key::to_string(Key::arrow_up()).get_size > 0);;
+    assert(|_|"to_string arrow_up != arrow_down",
+        Key::to_string(Key::arrow_up())
+            != Key::to_string(Key::arrow_down()));;
+    let s_ctrl = Key::to_string(Key::ctrl("c"));
+    // The result MUST contain the carried value "c".
+    assert(|_|"to_string ctrl c contains c",
+        s_ctrl.find("c", 0).is_some);;
+    let s_f5 = Key::to_string(Key::f(5));
+    assert(|_|"to_string f(5) contains 5",
+        s_f5.find("5", 0).is_some);;
+    pure()
+);
+
+test : IO ();
+test = (
+    test_ansi_constants;;
+    test_ansi_clear;;
+    test_ansi_cursor;;
+    test_ansi_styles;;
+    test_ansi_color_16_fg;;
+    test_ansi_color_16_bg;;
+    test_ansi_color_256;;
+    test_ansi_color_rgb;;
+    test_ansi_paint;;
+    eprintln("All Ansi tests passed.");;
+    test_key_empty;;
+    test_key_printable_ascii;;
+    test_key_special_control;;
+    test_key_ctrl;;
+    test_key_alt;;
+    test_key_esc_incomplete;;
+    test_key_arrows;;
+    test_key_nav;;
+    test_key_function_keys;;
+    test_key_utf8;;
+    test_key_utf8_incomplete;;
+    test_key_invalid;;
+    test_key_to_string;;
+    eprintln("All Key tests passed.")
+);

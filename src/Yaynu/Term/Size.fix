@@ -1,0 +1,78 @@
+// Terminal window size and SIGWINCH-driven resize detection.
+//
+// `get` reads the current size via `ioctl(TIOCGWINSZ)` on stdout.
+// Resize events are detected by installing a SIGWINCH handler (see
+// `install_resize_handler`) whose only effect is to set a shared
+// flag; the main loop calls `check_resized` to test-and-clear it.
+module Yaynu.Term.Size;
+
+import Yaynu.Term.Ffi;
+
+type TermSize = struct { rows : I64, cols : I64 };
+
+// ---- internal helpers ----
+
+_errno_msg : IO String;
+_errno_msg = (
+    let buf = Array::fill(128, 0_U8);
+    let cap = 128.to_CInt;
+    let (buf, _) = *buf.mutate_boxed_io(|p| Ffi::strerror(p, cap));
+    pure $ String::_unsafe_from_c_str(buf)
+);
+
+// Read a little-endian I32 from a 4-byte array.
+_read_i32 : Array U8 -> I32;
+_read_i32 = |buf| (
+    let b0 = buf.@(0).to_I32;
+    let b1 = buf.@(1).to_I32;
+    let b2 = buf.@(2).to_I32;
+    let b3 = buf.@(3).to_I32;
+    b0.bit_or(b1.shift_left(8_I32))
+      .bit_or(b2.shift_left(16_I32))
+      .bit_or(b3.shift_left(24_I32))
+);
+
+namespace TermSize {
+
+    // Get the current size of the terminal attached to stdout.
+    // Fails with an `IOFail` mentioning `ioctl TIOCGWINSZ` if the
+    // syscall reports a non-zero return.
+    get : IOFail TermSize;
+    get = (
+        // Use two Array I32 of size 1 as out-pointer scratch.
+        let rows_buf = Array::fill(1, 0_I32);
+        let cols_buf = Array::fill(1, 0_I32);
+        let (rows_buf, rc) = *rows_buf.mutate_boxed_io(|rp|
+            cols_buf.borrow_boxed_io(|cp|
+                Ffi::get_size(Ffi::stdout_fd, rp, cp)
+            )
+        ).lift;
+        if rc.to_I64 != 0 {
+            let msg = *_errno_msg.lift;
+            throw $ "ioctl TIOCGWINSZ: " + msg
+        };
+        // cols_buf was passed by `borrow_boxed_io` so its bytes were
+        // written by the C side and are observable via the surviving
+        // reference.
+        pure $ TermSize {
+            rows : rows_buf.@(0).to_I64,
+            cols : cols_buf.@(0).to_I64
+        }
+    );
+}
+
+// Install the SIGWINCH handler that sets the resize flag. Idempotent
+// — calling more than once just re-registers the same handler.
+install_resize_handler : IO ();
+install_resize_handler = (
+    let _ = *Ffi::install_winch_handler;
+    pure()
+);
+
+// Test-and-clear the resize flag set by the SIGWINCH handler. Returns
+// `true` if any SIGWINCH was delivered since the previous call.
+check_resized : IO Bool;
+check_resized = (
+    let v = *Ffi::check_winch_flag;
+    pure $ v.to_I64 != 0
+);

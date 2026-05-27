@@ -1,0 +1,22 @@
+// Top-level facade for the term-fix library.
+//
+// `import Yaynu.Term;` brings in the public ANSI / Mode / Size / Input /
+// Key / Output surface. The internal `Yaynu.Term.Ffi` module is
+// deliberately NOT re-exported — downstream callers should never touch
+// raw termios buffers or POSIX fds.
+//
+// Namespace note: this library lives under `Yaynu.*` in its initial
+// release. Standalone re-release (dropping the `Yaynu.` prefix) is
+// planned for a later version.
+module Yaynu.Term;
+
+import Yaynu.Term.Ansi;
+import Yaynu.Term.Input;
+import Yaynu.Term.Key;
+import Yaynu.Term.Mode;
+import Yaynu.Term.Output;
+import Yaynu.Term.Size;
+
+// Library version string.
+version : String;
+version = "0.1.0";

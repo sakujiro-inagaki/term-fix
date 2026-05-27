@@ -1,0 +1,58 @@
+// Single-byte reads from stdin with optional timeout.
+//
+// All entry points target STDIN_FILENO. The underlying C shim uses
+// `select(2)` for the wait and then a single `read(2)` for the byte,
+// so no fd state (O_NONBLOCK) is touched and the helpers compose
+// cleanly with raw-mode termios from `Yaynu.Term.Mode`.
+module Yaynu.Term.Input;
+
+import Yaynu.Term.Ffi;
+
+// ---- internal helpers ----
+
+_errno_msg : IO String;
+_errno_msg = (
+    let buf = Array::fill(128, 0_U8);
+    let cap = 128.to_CInt;
+    let (buf, _) = *buf.mutate_boxed_io(|p| Ffi::strerror(p, cap));
+    pure $ String::_unsafe_from_c_str(buf)
+);
+
+// ---- public API ----
+
+// Read a single byte from stdin, waiting at most `timeout_ms`
+// milliseconds. `Ok None` means the timeout elapsed without a byte;
+// `Ok (Some b)` means `b` was read. A negative timeout is not
+// supported in v0.1; callers must pass `>= 0`.
+read_byte_timeout : I64 -> IOFail (Option U8);
+read_byte_timeout = |timeout_ms| (
+    let out = Array::fill(1, 0_U8);
+    let (out, rc) = *out.mutate_boxed_io(|p|
+        Ffi::read_byte_timeout(Ffi::stdin_fd, timeout_ms.to_CInt, p)
+    ).lift;
+    let r = rc.to_I64;
+    if r == 1 { pure $ Option::some(out.@(0)) };
+    if r == 0 { pure $ Option::none() };
+    // Error path (r == -1).
+    let msg = *_errno_msg.lift;
+    throw $ "read: " + msg
+);
+
+// Non-blocking single-byte poll. Equivalent to `read_byte_timeout(0)`.
+read_byte_nonblock : IOFail (Option U8);
+read_byte_nonblock = read_byte_timeout(0);
+
+// Drain every byte currently available on stdin without blocking.
+// Returns the bytes in the order they were read. An empty buffer
+// returns `Ok []`. If a read fails after some bytes were already
+// collected, the IOFail fails (collected bytes are discarded).
+read_available : IOFail (Array U8);
+read_available = (
+    loop_m([], |acc| (
+        let next = *read_byte_nonblock;
+        match next {
+            none() => break_m $ acc,
+            some(b) => continue_m $ acc.push_back(b)
+        }
+    ))
+);

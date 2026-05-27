@@ -1,0 +1,136 @@
+// Terminal mode (termios) snapshot / restore and raw-mode helpers.
+//
+// Operates on `STDIN_FILENO` because raw mode is a property of the
+// terminal line discipline, and the application reads from stdin. The
+// snapshot is held opaquely as `Array U8` of `sizeof(struct termios)`
+// bytes; the Fix layer never inspects the contents.
+//
+// Always prefer `with_raw` over manual `enter_raw` / `restore` so that
+// a panicking action cannot leave the terminal in a broken state.
+module Yaynu.Term.Mode;
+
+import Yaynu.Term.Ffi;
+
+// Opaque container for a saved `struct termios`. The byte layout
+// inside `saved` is platform-specific (the C side reads/writes it).
+type TermMode = box struct { saved : Array U8 };
+
+// ---- internal helpers ----
+
+// strerror(errno) snapshot. Call immediately after a failing FFI
+// shim function. Returns a Fix String.
+_errno_msg : IO String;
+_errno_msg = (
+    let buf = Array::fill(128, 0_U8);
+    let cap = 128.to_CInt;
+    let (buf, _) = *buf.mutate_boxed_io(|p| Ffi::strerror(p, cap));
+    pure $ String::_unsafe_from_c_str(buf)
+);
+
+// Allocate a buffer sized for `struct termios`.
+_alloc_termios_buf : IO (Array U8);
+_alloc_termios_buf = (
+    let sz = (*Ffi::termios_size).to_I64;
+    pure $ Array::fill(sz, 0_U8)
+);
+
+// Read termios into `buf` via `tcgetattr(STDIN_FILENO, &buf)`. Returns
+// the (possibly modified) buffer and the syscall return code.
+_tcgetattr : Array U8 -> IO (Array U8, CInt);
+_tcgetattr = |buf|
+    buf.mutate_boxed_io(|p| Ffi::get_attr(Ffi::stdin_fd, p));
+
+// Apply termios via `tcsetattr(STDIN_FILENO, TCSANOW, &buf)`.
+_tcsetattr : Array U8 -> IO (Array U8, CInt);
+_tcsetattr = |buf|
+    buf.mutate_boxed_io(|p|
+        Ffi::set_attr(Ffi::stdin_fd, Ffi::tcsa_now, p));
+
+// Deep-copy a byte buffer so the caller can mutate one copy while
+// keeping the original intact. `mutate_boxed_io` only mutates in
+// place when the array is uniquely referenced; this helper produces
+// an independent copy.
+_copy_bytes : Array U8 -> Array U8;
+_copy_bytes = |bs| Array::from_map(bs.get_size, |i| bs.@(i));
+
+// Build an IOFail error string of the form "<syscall>: <strerror>".
+_fail_with : String -> IOFail a;
+_fail_with = |syscall| (
+    let msg = *_errno_msg.lift;
+    throw $ syscall + ": " + msg
+);
+
+// ---- public API ----
+
+namespace TermMode {
+
+    // Snapshot the current stdin termios configuration without
+    // changing it.
+    save : IOFail TermMode;
+    save = (
+        let buf = *_alloc_termios_buf.lift;
+        let (buf, rc) = *_tcgetattr(buf).lift;
+        if rc.to_I64 != 0 { _fail_with("tcgetattr") };
+        pure $ TermMode { saved : buf }
+    );
+
+    // Restore a saved termios. Issues `tcsetattr(stdin, TCSANOW, ...)`.
+    restore : TermMode -> IOFail ();
+    restore = |mode| (
+        let buf = mode.@saved;
+        let (_, rc) = *_tcsetattr(buf).lift;
+        if rc.to_I64 != 0 { _fail_with("tcsetattr") };
+        pure()
+    );
+}
+
+// Enter raw mode while keeping ISIG enabled. The returned `TermMode`
+// holds the pre-call termios so the caller (typically `with_raw`) can
+// restore it later.
+enter_raw : IOFail TermMode;
+enter_raw = _enter_with(Ffi::make_raw);
+
+// Enter no-echo mode (disable ECHO only; keep ICANON / ISIG).
+enter_no_echo : IOFail TermMode;
+enter_no_echo = _enter_with(Ffi::make_no_echo);
+
+// Enter raw mode and additionally disable signal generation so Ctrl+C
+// arrives as the byte 0x03 instead of raising SIGINT.
+enter_raw_no_sig : IOFail TermMode;
+enter_raw_no_sig = _enter_with(Ffi::make_raw_no_sig);
+
+// Shared body for the three `enter_*` flavours. `mutator` is the C
+// helper that turns a buffer copied from the saved termios into the
+// target mode (raw / no-echo / raw-no-sig). Returns the snapshot of
+// the *pre-modification* termios.
+_enter_with : (Ptr -> IO CInt) -> IOFail TermMode;
+_enter_with = |mutator| (
+    let buf = *_alloc_termios_buf.lift;
+    let (buf, rc) = *_tcgetattr(buf).lift;
+    if rc.to_I64 != 0 { _fail_with("tcgetattr") };
+
+    // Work on an independent copy so `buf` still holds the pristine
+    // snapshot we return as `TermMode::saved`.
+    let mod_buf = _copy_bytes(buf);
+    let (mod_buf, _) = *mod_buf.mutate_boxed_io(mutator).lift;
+    let (_, rc2) = *_tcsetattr(mod_buf).lift;
+    if rc2.to_I64 != 0 { _fail_with("tcsetattr") };
+
+    pure $ TermMode { saved : buf }
+);
+
+// Run `action` under raw mode, guaranteeing termios restoration even
+// if the action fails. If both the action and the restore fail, the
+// action's error takes precedence.
+with_raw : (() -> IOFail a) -> IOFail a;
+with_raw = |action| (
+    let mode = *enter_raw;
+    // Capture both the action outcome and the restore outcome as
+    // plain `Result`s so we always run restore.
+    let action_result = *(action(()).to_result).lift;
+    let _restore_result = *(TermMode::restore(mode).to_result).lift;
+    match action_result {
+        ok(v)  => pure(v),
+        err(e) => throw(e)
+    }
+);

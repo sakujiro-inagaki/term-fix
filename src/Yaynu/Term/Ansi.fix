@@ -1,0 +1,195 @@
+// ANSI escape-sequence builders.
+//
+// Every value/function here is a pure `String` computation — nothing
+// touches stdout. The caller writes the returned strings via
+// `Yaynu.Term.Output::write` / `write_batch`.
+//
+// All sequences are xterm-flavoured CSI / SGR / DEC private modes. We
+// assume the terminal speaks ANSI + UTF-8; capability detection is a
+// non-goal per the design doc.
+module Yaynu.Term.Ansi;
+
+// ---- core control prefixes ----
+
+// Single byte 0x1B ("ESC"). Fix string literals do not support `\x`
+// escapes, so we build it from the raw byte plus a NUL terminator.
+esc : String;
+esc = String::_unsafe_from_c_str([27_U8, 0_U8]);
+
+// CSI (Control Sequence Introducer) prefix: ESC followed by `[`.
+csi : String;
+csi = esc + "[";
+
+// ---- screen clearing ----
+
+clear_screen : String;
+clear_screen = csi + "2J";
+
+clear_line : String;
+clear_line = csi + "2K";
+
+clear_to_end_of_line : String;
+clear_to_end_of_line = csi + "0K";
+
+clear_to_start_of_line : String;
+clear_to_start_of_line = csi + "1K";
+
+// ---- alternate screen buffer (xterm DEC private mode 1049) ----
+
+enter_alternate_screen : String;
+enter_alternate_screen = csi + "?1049h";
+
+leave_alternate_screen : String;
+leave_alternate_screen = csi + "?1049l";
+
+// ---- cursor positioning ----
+
+// 1-origin (row, col) absolute move. Callers are responsible for
+// passing values inside the terminal's range; out-of-range behaviour
+// is defined by the emulator, not by us.
+move_to : I64 -> I64 -> String;
+move_to = |row, col|
+    csi + row.to_string + ";" + col.to_string + "H";
+
+move_to_col : I64 -> String;
+move_to_col = |col| csi + col.to_string + "G";
+
+move_up : I64 -> String;
+move_up = |n| csi + n.to_string + "A";
+
+move_down : I64 -> String;
+move_down = |n| csi + n.to_string + "B";
+
+move_right : I64 -> String;
+move_right = |n| csi + n.to_string + "C";
+
+move_left : I64 -> String;
+move_left = |n| csi + n.to_string + "D";
+
+hide_cursor : String;
+hide_cursor = csi + "?25l";
+
+show_cursor : String;
+show_cursor = csi + "?25h";
+
+save_cursor : String;
+save_cursor = csi + "s";
+
+restore_cursor : String;
+restore_cursor = csi + "u";
+
+// ---- text styles (SGR) ----
+
+reset : String;
+reset = csi + "0m";
+
+bold : String;
+bold = csi + "1m";
+
+dim : String;
+dim = csi + "2m";
+
+italic : String;
+italic = csi + "3m";
+
+underline : String;
+underline = csi + "4m";
+
+blink : String;
+blink = csi + "5m";
+
+reverse : String;
+reverse = csi + "7m";
+
+// ---- 16-colour palette ----
+
+type Color16 = box union {
+    black          : (),
+    red            : (),
+    green          : (),
+    yellow         : (),
+    blue           : (),
+    magenta        : (),
+    cyan           : (),
+    white          : (),
+    bright_black   : (),
+    bright_red     : (),
+    bright_green   : (),
+    bright_yellow  : (),
+    bright_blue    : (),
+    bright_magenta : (),
+    bright_cyan    : (),
+    bright_white   : ()
+};
+
+// SGR foreground for the 16-colour palette. Base colours map to 30..37,
+// bright variants to 90..97 (i.e. CSI 9N m), per ECMA-48 + xterm.
+fg_color_16 : Color16 -> String;
+fg_color_16 = |c| (
+    match c {
+        black()          => csi + "30m",
+        red()            => csi + "31m",
+        green()          => csi + "32m",
+        yellow()         => csi + "33m",
+        blue()           => csi + "34m",
+        magenta()        => csi + "35m",
+        cyan()           => csi + "36m",
+        white()          => csi + "37m",
+        bright_black()   => csi + "90m",
+        bright_red()     => csi + "91m",
+        bright_green()   => csi + "92m",
+        bright_yellow()  => csi + "93m",
+        bright_blue()    => csi + "94m",
+        bright_magenta() => csi + "95m",
+        bright_cyan()    => csi + "96m",
+        bright_white()   => csi + "97m"
+    }
+);
+
+// SGR background for the 16-colour palette. Base 40..47, bright 100..107.
+bg_color_16 : Color16 -> String;
+bg_color_16 = |c| (
+    match c {
+        black()          => csi + "40m",
+        red()            => csi + "41m",
+        green()          => csi + "42m",
+        yellow()         => csi + "43m",
+        blue()           => csi + "44m",
+        magenta()        => csi + "45m",
+        cyan()           => csi + "46m",
+        white()          => csi + "47m",
+        bright_black()   => csi + "100m",
+        bright_red()     => csi + "101m",
+        bright_green()   => csi + "102m",
+        bright_yellow()  => csi + "103m",
+        bright_blue()    => csi + "104m",
+        bright_magenta() => csi + "105m",
+        bright_cyan()    => csi + "106m",
+        bright_white()   => csi + "107m"
+    }
+);
+
+// ---- 256-colour palette ----
+
+fg_color_256 : U8 -> String;
+fg_color_256 = |n| csi + "38;5;" + n.to_string + "m";
+
+bg_color_256 : U8 -> String;
+bg_color_256 = |n| csi + "48;5;" + n.to_string + "m";
+
+// ---- 24-bit RGB ----
+
+fg_color_rgb : U8 -> U8 -> U8 -> String;
+fg_color_rgb = |r, g, b|
+    csi + "38;2;" + r.to_string + ";" + g.to_string + ";" + b.to_string + "m";
+
+bg_color_rgb : U8 -> U8 -> U8 -> String;
+bg_color_rgb = |r, g, b|
+    csi + "48;2;" + r.to_string + ";" + g.to_string + ";" + b.to_string + "m";
+
+// ---- paint helper ----
+
+// Wraps `text` between the supplied style prefix and a trailing reset.
+// Useful for `paint(fg_color_16(Color16::red()), "danger")`.
+paint : String -> String -> String;
+paint = |prefix, text| prefix + text + reset;
