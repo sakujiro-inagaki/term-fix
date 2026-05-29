@@ -228,6 +228,7 @@ test_key_arrows = (
     _expect("ArrowLeft", [27_U8, 91_U8, 68_U8], "complete(arrow_left,3)");;
     _expect("Home (CSI H)", [27_U8, 91_U8, 72_U8], "complete(home,3)");;
     _expect("End (CSI F)", [27_U8, 91_U8, 70_U8], "complete(end,3)");;
+    _expect("BackTab", [27_U8, 91_U8, 90_U8], "complete(back_tab,3)");;
     pure()
 );
 
@@ -315,6 +316,11 @@ test_key_to_string = (
     let s_f5 = Key::to_string(Key::f(5));
     assert(|_|"to_string f(5) contains 5",
         s_f5.find("5", 0).is_some);;
+    assert(|_|"to_string back_tab nonempty",
+        Key::to_string(Key::back_tab()).get_size > 0);;
+    assert(|_|"to_string back_tab != tab",
+        Key::to_string(Key::back_tab())
+            != Key::to_string(Key::tab()));;
     pure()
 );
 

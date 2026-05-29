@@ -17,6 +17,7 @@ type Key = box union {
     char        : String,
     enter       : (),
     tab         : (),
+    back_tab    : (),
     backspace   : (),
     escape      : (),
     arrow_up    : (),
@@ -163,6 +164,7 @@ _parse_csi = |bytes| (
         if term == 68_U8 { KeyParseResult::complete((Key::arrow_left(), 3)) };  // D
         if term == 72_U8 { KeyParseResult::complete((Key::home(), 3)) };        // H
         if term == 70_U8 { KeyParseResult::complete((Key::end_key(), 3)) };     // F
+        if term == 90_U8 { KeyParseResult::complete((Key::back_tab(), 3)) };    // Z
         KeyParseResult::invalid(3)
     };
 
@@ -294,6 +296,7 @@ to_string = |k| (
         char(s)      => "char:" + s,
         enter()      => "enter",
         tab()        => "tab",
+        back_tab()   => "back_tab",
         backspace()  => "backspace",
         escape()     => "escape",
         arrow_up()   => "arrow_up",
